@@ -1,0 +1,236 @@
+/* * * * * * * *
+Solar Tracker using only the Panel Voltage
+to track the sun east/west
+* * * * * * * */
+// Pins being used
+const byte PIN_PANEL_VOLTAGE = A0;      // panel voltage is measured at Analogue Pin 0
+const byte PIN_MOTOR_EN1 = 10;
+const byte PIN_MOTOR_IN1 = 7;
+const byte PIN_MOTOR_IN2 = 8;
+const byte PIN_LIMIT_EAST = A4;
+const byte PIN_LIMIT_WEST = A5;
+
+// Program constants
+const unsigned int READ_INTERVAL = 100;    // run every 100ms (0.1s)
+const unsigned int DRIVE_INTERVAL = 1000;  // update drives every second
+const unsigned int SEARCH_INTERVAL = 5000;
+const unsigned int MOTOR_PWM = 50;      // 50/255 of the motor power to prevent the motor from burning out
+const unsigned int PANEL_TOLERANCE = 3; // how sensitive the readings should be
+const unsigned int PANEL_ACCUMULATOR_VALUES = 5;
+
+// Gloabl Variables
+unsigned long readTime = 0;
+unsigned long driveTime = 0;
+unsigned long searchTime = 0;
+int panelVoltsAccumulated = 0;
+unsigned int drive_READ_INTERVAL = 10;
+int decision = 0;
+
+// function prototypes
+void check_limits();
+int  read_panel();
+void print_panel();
+void find_sun();
+void move_west();
+void move_east();
+void motor_stop();
+void go_home();
+
+void setup() {
+  pinMode(PIN_PANEL_VOLTAGE, INPUT);
+  pinMode(PIN_MOTOR_EN1, OUTPUT);
+  pinMode(PIN_MOTOR_IN1, OUTPUT);
+  pinMode(PIN_MOTOR_IN2, OUTPUT);
+  // set internal pull up resistance
+  digitalWrite(PIN_LIMIT_EAST, HIGH);
+  digitalWrite(PIN_LIMIT_WEST, HIGH);
+
+  Serial.begin(57600);
+  delay(2000);
+  go_home();
+
+  delay(10000);
+  Serial.println("Starting");
+
+  //  panelVoltsAccumulated = analogRead(PIN_PANEL_VOLTAGE) * (PANEL_ACCUMULATOR_VALUES - 10);
+}
+
+void loop() {
+  check_limits();
+  unsigned long currentTime = millis();
+  if (currentTime > searchTime) {
+    searchTime = currentTime + SEARCH_INTERVAL;
+    find_sun();
+  }
+
+  //  if (currentTime > readTime) {
+  //    readTime = currentTime + READ_INTERVAL;
+  //    decision = read_panel();
+  //  }
+
+  //  if (currentTime > driveTime) {
+  //    driveTime = currentTime + DRIVE_INTERVAL;
+  //    switch (decision){
+  //    case -1: 
+  //      if(!digitalRead(PIN_LIMIT_EAST)){
+  //        move_east();
+  //      } 
+  //      else {
+  //        motor_stop();
+  //      }
+  //      break;
+  //    case 1:
+  //      if(!digitalRead(PIN_LIMIT_WEST)){
+  //        move_west();
+  //      } 
+  //      else {
+  //        motor_stop();
+  //      }
+  //      break;
+  //    case 0:
+  //      motor_stop();
+  //      break;
+  //    }
+  //  }
+}
+
+void check_limits(){
+  // Heading east
+  if (digitalRead(PIN_MOTOR_IN1) && !digitalRead(PIN_MOTOR_IN2) && digitalRead(PIN_LIMIT_EAST)){
+    motor_stop();
+  } 
+  // Heading west
+  if (digitalRead(PIN_MOTOR_IN2) && !digitalRead(PIN_MOTOR_IN1) && digitalRead(PIN_LIMIT_WEST)){
+    motor_stop();
+  } 
+
+}
+
+// negative number for east, positive number for west, 0 for stopped
+int read_panel(){
+  int panelVolts = analogRead(PIN_PANEL_VOLTAGE);
+  panelVoltsAccumulated += panelVolts;
+  int panelVoltsAvg = panelVoltsAccumulated / PANEL_ACCUMULATOR_VALUES;
+  panelVoltsAccumulated -= panelVoltsAvg;
+
+  Serial.print("Current: ");
+  Serial.print(panelVolts);
+  Serial.print(" Avg: ");
+  Serial.print(panelVoltsAvg);
+  Serial.print(" Acc: ");
+  Serial.println(panelVoltsAccumulated);
+
+  // check if we are within tolerence
+  if (panelVolts > panelVoltsAvg + PANEL_TOLERANCE) {
+    return 1;
+  } 
+  return 0;
+
+}
+
+void print_panel(int pv, int avg, int acc) {
+  Serial.print("V:");
+  Serial.print(pv);
+  Serial.print(" Avg:");
+  Serial.print(avg);
+  Serial.print(" Acc:");
+  Serial.println(acc);
+}
+
+// this function moves the panel east to west to find the optimal output
+void find_sun() {
+  Serial.println("Find Sun");
+  int panelVolts = analogRead(PIN_PANEL_VOLTAGE);
+  int panelVoltsAcc = panelVolts * PANEL_ACCUMULATOR_VALUES;
+  int panelVoltsAvg = panelVolts;
+  byte fbk = 100;
+  int feedback = 1;
+
+  // move east first, then west
+  Serial.println("Find Sun - East");
+  if (!digitalRead(PIN_LIMIT_EAST)) {
+    move_east();
+    delay(500);
+    do {
+      if (digitalRead(PIN_LIMIT_EAST))
+        Serial.println("East Limit hit");
+      break;
+      delay(300);
+//      print_panel(panelVolts, panelVoltsAvg, panelVoltsAcc);
+      panelVolts = analogRead(PIN_PANEL_VOLTAGE);
+//      panelVoltsAcc += panelVolts;
+//      panelVoltsAvg = panelVoltsAcc / PANEL_ACCUMULATOR_VALUES;
+//      panelVoltsAcc -= panelVoltsAvg;
+      print_panel(panelVolts, panelVoltsAvg, panelVoltsAcc);
+    } 
+    while (panelVolts < panelVoltsAvg);
+  }
+
+  // stop
+  Serial.println("Find Sun - Wait");
+  motor_stop();
+  delay(1000);
+  feedback = 1;
+  // move west
+  Serial.println("Find Sun - West");
+  if (!digitalRead(PIN_LIMIT_WEST)) {
+    move_west();
+    delay(500);
+    do {
+      if (digitalRead(PIN_LIMIT_WEST)) {
+        Serial.println("West Limit hit");
+        break;
+      }
+      delay(300);
+//      print_panel(panelVolts, panelVoltsAvg, panelVoltsAcc);
+      panelVolts = analogRead(PIN_PANEL_VOLTAGE);
+//      panelVoltsAcc += panelVolts;
+//      panelVoltsAvg = panelVoltsAcc / PANEL_ACCUMULATOR_VALUES;
+//      panelVoltsAcc -= panelVoltsAvg;
+      print_panel(panelVolts, panelVoltsAvg, panelVoltsAcc);
+    }
+    while (panelVolts > panelVoltsAvg);
+  }
+
+  //stop
+  motor_stop();
+}
+
+// This function tells the motor controller to move the panel west
+void move_west(){
+  Serial.println("Moving West");
+  //  digitalWrite(PIN_MOTOR_EN1, LOW); // Ensure power is off to the H bridge prior to changing 
+  digitalWrite(PIN_MOTOR_IN1, LOW);
+  digitalWrite(PIN_MOTOR_IN2, HIGH);
+  analogWrite(PIN_MOTOR_EN1, MOTOR_PWM);
+}
+
+// This function tells the motor controller to move the panel east
+void move_east(){
+  Serial.println("Moving East");
+  //  digitalWrite(PIN_MOTOR_EN1, LOW); // Ensure power is off to the H bridge prior to changing 
+  digitalWrite(PIN_MOTOR_IN1, HIGH);
+  digitalWrite(PIN_MOTOR_IN2, LOW);
+  analogWrite(PIN_MOTOR_EN1, 20);
+}
+
+// This function stops the motors
+void motor_stop(){
+  Serial.println("Stopped");
+  digitalWrite(PIN_MOTOR_EN1, HIGH);
+  digitalWrite(PIN_MOTOR_IN1, LOW);
+  digitalWrite(PIN_MOTOR_IN2, LOW);
+}
+
+void go_home(){
+  // return home
+  if(!digitalRead(PIN_LIMIT_EAST)){
+    move_east();
+  };
+  int drive_counter = 0;
+  while(!digitalRead(PIN_LIMIT_EAST)  && drive_counter < 100000 ){
+    drive_counter++;
+    delay(10);
+  }
+  motor_stop();
+}

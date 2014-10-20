@@ -1,0 +1,251 @@
+/* * * * * * * *
+Solar Tracker using MicroView
+to track the sun east/west using either Panel Voltage or LDRs
+
+Currently, pinout is for use on an MBoard without the MicroView's OLED display
+* * * * * * * */
+
+#include <MicroView.h>
+
+#define OLED false
+#define DEBUG false
+#define PERIOD_DEBUG 2000
+#define SERIAL true
+
+const byte MOTOR_EN   = 10;		// h-bridge enable pin
+const byte MOTOR_EAST = 7;		// h-bridge east pin
+const byte MOTOR_WEST = 8;		// h-bridge west pin
+
+const byte MOTOR_PWM_EAST = 20;	// pulse width modulation output
+const byte MOTOR_PWM_WEST = 40;	// pulse width modulation output
+const byte MOTOR_PWM_OFF  = 0;	// pulse width modulation output
+
+const byte LIMIT_EAST = A4;		// pin connected to east contact limit
+const byte LIMIT_WEST = A5;		// pin connected to west contact limit
+const byte LDR_EAST = A2;		// pin connected to east LDR
+const byte LDR_WEST = A1;		// pin connected to west LDR
+
+const byte DEAD_BAND = 15;		// LDR tollerance on readings (reduce jitter)
+const byte NIGHT_LIMIT = 5;		// LDR threshold to determine when night
+
+// timing constants
+const unsigned long PERIOD_LDR = 500;	// the period for checking the LDRs
+
+// signalling values
+const byte DRIVE_STOP = 0;
+const byte DRIVE_WEST = 1;
+const byte DRIVE_EAST = 2;
+const byte DISPLAY_ON = 10;
+const byte DISPLAY_OFF = 11;
+const byte POWER_DOWN = 255;
+
+// global variables
+unsigned long period_debug = 0;
+unsigned long period_ldr = 500;
+unsigned long period_wake = 0;
+unsigned long display_change = 0;
+byte display_state = DISPLAY_ON;
+String messageLine0 = "SolarTrack";
+String messageLine1 = "Math & Sci";
+String messageLine2 = " ^ 2014 ^ ";
+String messageLine3 = "Running on";
+String messageLine4 = "MicroView!";
+
+// prototypes
+void messageRedraw();
+int check_ldr();
+void drive_west();
+void drive_east();
+void drive_home();
+void drive_stop();
+void power_down();
+void power_down(unsigned long);
+
+void setup()
+{
+#if OLED
+	uView.begin();				// start MicroView
+#endif
+#if SERIAL
+	Serial.begin(57600);
+#endif
+
+	messageRedraw();
+
+	pinMode(MOTOR_EN, OUTPUT);			// define MOTOR_EN pin as an output
+	pinMode(MOTOR_WEST, OUTPUT);		// define MOTOR_WEST pin as an output
+	pinMode(MOTOR_EAST, OUTPUT);		// define MOTOR_EAST pin as an output
+	pinMode(LIMIT_WEST, INPUT_PULLUP);	// enable input pull-up resistor on WEST_STOP
+	pinMode(LIMIT_EAST, INPUT_PULLUP);	// enable input pull-up resistor
+}
+
+void loop()
+{
+	unsigned long time = millis();
+	messageLine4 = String(time / 1000);
+
+	// check if driving to east and hit limit
+	if (digitalRead(LIMIT_EAST) && digitalRead(MOTOR_EAST) && !digitalRead(MOTOR_WEST))
+		drive_stop();
+	// check if driving to west and hit limit
+	if (digitalRead(LIMIT_WEST) && !digitalRead(MOTOR_EAST) && digitalRead(MOTOR_WEST))
+		drive_stop();
+
+#if OLED
+	// check display state
+	if (display_change != 0 && time >= display_change)
+	{
+		if (display_state == DISPLAY_OFF)
+		{
+			uView.end();
+			display_change = 0;
+		}
+
+		if (display_state == DISPLAY_ON)
+		{
+			uView.begin();
+			display_change = 0;
+		}
+	}
+#endif
+
+	// check LDRs every PERIOD_LDR
+	if (time >= period_ldr)
+	{
+		period_ldr = time + PERIOD_LDR;
+		switch (check_ldr())
+		{
+			case DRIVE_STOP:
+				messageLine3 = "stopped";
+				drive_stop();
+//				power_down(1000);
+				break;
+			case DRIVE_WEST:
+				messageLine3 = "drive west";
+				drive_west();
+				break;
+			case DRIVE_EAST:
+				messageLine3 = "drive east";
+				drive_east();
+				break;
+			case POWER_DOWN:
+				messageLine3 = "power down";
+				power_down();
+				break;
+			default:
+				// fail safe on any unexpected values
+				drive_stop();
+				messageLine4 = "ex: check_ldr";
+				delay(10000);
+		}
+		messageRedraw();
+	}
+}
+
+void messageRedraw()
+{
+#if UVIEW
+	uView.clear(PAGE);
+	uView.setCursor(0, 0);
+	uView.print(messageLine0);
+	uView.setCursor(0, 10);
+	uView.print(messageLine1);
+	uView.setCursor(0, 20);
+	uView.print(messageLine2);
+	uView.setCursor(0, 30);
+	uView.print(messageLine3);
+	uView.setCursor(0, 40);
+	uView.print(messageLine4);
+	uView.display();
+#endif
+#if SERIAL
+	Serial.println(messageLine0);
+	Serial.println(messageLine1);
+	Serial.println(messageLine2);
+	Serial.println(messageLine3);
+	Serial.println(messageLine4);
+#endif
+}
+
+int check_ldr()
+{
+	// read sensor values
+	bool limit_east = digitalRead(LIMIT_EAST);	// read value of back limit
+	bool limit_west = digitalRead(LIMIT_WEST);	// read value of front limit
+	int ldr_east = analogRead(LDR_EAST);    	// read value of back LDR
+	int ldr_west = analogRead(LDR_WEST);		// read value of front LDR
+#if SERIAL
+	Serial.print("E:");
+	Serial.print(limit_east);
+	Serial.print(" W:");
+	Serial.print(limit_west);
+	Serial.print(" LDR E:");
+	Serial.print(ldr_east);
+	Serial.print(" LDR W:");
+	Serial.println(ldr_west);
+#endif
+	 // check if night/dark
+	// if west and east ldr values are below the night limit
+	if (ldr_west < NIGHT_LIMIT && ldr_east < NIGHT_LIMIT)
+	{
+		// if it is night, check if panel has returned to home position
+		if (limit_east)
+			return POWER_DOWN;	// on the east limit, powerdown
+
+		return DRIVE_EAST;		// otherwise, not on the east limit, so drive east
+	}
+
+	// check if we need to move to the west
+	// if not on the west limit, and the readings indicate we need to go west
+	if (!limit_west && (ldr_west < ldr_east - DEAD_BAND))
+		return DRIVE_WEST; // return the signal to drive west
+
+	// check if we need to move to the east
+	// otherwise, if not on the east limit and readings indicate we need to go east
+	if (!limit_east && (ldr_east < ldr_west - DEAD_BAND))
+		return DRIVE_EAST;  // return the signal to drive east
+
+	// if we haven't returned yet, we must be within tollerance
+	return DRIVE_STOP;   // return the signalling to stop driving
+}
+
+void drive_west()
+{
+	analogWrite(MOTOR_EN, MOTOR_PWM_WEST);
+	digitalWrite(MOTOR_EAST, LOW);
+	digitalWrite(MOTOR_WEST, HIGH);
+}
+
+void drive_east()
+{
+	analogWrite(MOTOR_EN, MOTOR_PWM_EAST);
+	digitalWrite(MOTOR_WEST, LOW);
+	digitalWrite(MOTOR_EAST, HIGH);
+}
+
+void drive_stop()
+{
+	analogWrite(MOTOR_EN, MOTOR_PWM_OFF);
+	digitalWrite(MOTOR_WEST, LOW);
+	digitalWrite(MOTOR_EAST, LOW);
+}
+
+void power_down()
+{
+	power_down(5000);
+}
+
+void power_down(unsigned long duration)
+{
+	drive_stop();
+	messageLine3 = "power down";
+#if OLED
+	if (display_state == DISPLAY_ON)
+	{
+		display_state = DISPLAY_OFF;
+		LIMIT_EAST.end();
+		display_state = DISPLAY_ON;
+		display_change = millis() + duration;
+	}
+#endif
+}
